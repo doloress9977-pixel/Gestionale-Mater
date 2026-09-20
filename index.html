@@ -3762,4 +3762,135 @@ mdmSeedAcademyOnce();
 mdmAfterRender();
 
 show('Dashboard');
-</script></body></html>
+</script><!-- MDM v43: Firebase Authentication + secure Worker bridge -->
+<style id="mdm-auth-style">
+  #mdmAuthGate{position:fixed;inset:0;z-index:99999;background:linear-gradient(160deg,#082b67 0%,#0d3478 58%,#15479a 100%);display:flex;align-items:center;justify-content:center;padding:22px;font-family:Inter,Arial,sans-serif}
+  #mdmAuthGate[hidden]{display:none!important}
+  .mdm-login-card{width:min(430px,100%);background:#fff;border-radius:24px;padding:28px;box-shadow:0 24px 70px rgba(0,0,0,.28)}
+  .mdm-login-title{font-size:28px;font-weight:900;color:#082b67;margin:0 0 6px}
+  .mdm-login-sub{color:#6f7f98;margin:0 0 22px;font-size:14px}
+  .mdm-login-label{display:block;font-size:12px;font-weight:800;color:#10274e;margin:13px 0 6px;text-transform:uppercase;letter-spacing:.04em}
+  .mdm-login-input{width:100%;padding:13px 14px;border:1px solid #dbe5f2;border-radius:12px;background:#f8fbff;color:#10274e;outline:none}
+  .mdm-login-input:focus{border-color:#1c57bd;box-shadow:0 0 0 3px rgba(28,87,189,.12)}
+  .mdm-login-btn{width:100%;margin-top:18px;padding:14px;border:0;border-radius:12px;background:#f3dd28;color:#082b67;font-weight:900;font-size:16px}
+  .mdm-login-btn:disabled{opacity:.55;cursor:wait}
+  #mdmAuthError{min-height:20px;margin-top:12px;color:#c62828;font-size:13px;font-weight:700}
+  #mdmAuthStatus{min-height:18px;margin-top:8px;color:#1ea463;font-size:12px;font-weight:800}
+  #mdmUserBadge{position:fixed;right:14px;bottom:14px;z-index:9800;display:none;align-items:center;gap:9px;background:#082b67;color:#fff;border:1px solid rgba(255,255,255,.2);box-shadow:0 8px 22px rgba(0,0,0,.18);border-radius:999px;padding:8px 10px 8px 13px;font:700 12px/1.2 Inter,Arial,sans-serif}
+  #mdmUserBadge button{border:0;background:#f3dd28;color:#082b67;border-radius:999px;padding:7px 10px;font-weight:900}
+  @media(max-width:700px){.mdm-login-card{padding:22px;border-radius:20px}.mdm-login-title{font-size:24px}#mdmUserBadge{right:8px;bottom:8px;max-width:calc(100vw - 16px)}#mdmUserEmail{max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+</style>
+<div id="mdmAuthGate" aria-live="polite">
+  <form class="mdm-login-card" id="mdmLoginForm" autocomplete="on">
+    <h2 class="mdm-login-title">Materdomini Volley</h2>
+    <p class="mdm-login-sub">Accesso al gestionale</p>
+    <label class="mdm-login-label" for="mdmLoginEmail">Email</label>
+    <input class="mdm-login-input" id="mdmLoginEmail" type="email" autocomplete="username" required>
+    <label class="mdm-login-label" for="mdmLoginPassword">Password</label>
+    <input class="mdm-login-input" id="mdmLoginPassword" type="password" autocomplete="current-password" required>
+    <button class="mdm-login-btn" id="mdmLoginButton" type="submit">Accedi</button>
+    <div id="mdmAuthError"></div>
+    <div id="mdmAuthStatus"></div>
+  </form>
+</div>
+<div id="mdmUserBadge">
+  <span id="mdmUserEmail"></span>
+  <button type="button" id="mdmLogoutButton">Esci</button>
+</div>
+<script type="module" id="mdm-firebase-auth">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
+  import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyAd1-FFTQu4YDip-OAgC6vFdhO1RKAaQwE",
+    authDomain: "materdomini-gestionale.firebaseapp.com",
+    projectId: "materdomini-gestionale",
+    storageBucket: "materdomini-gestionale.firebasestorage.app",
+    messagingSenderId: "635236966504",
+    appId: "1:635236966504:web:4ff7ba5c91d7cb5a64dbdd"
+  };
+
+  const WORKER_BASE = "https://materdomini-files.doloress9977.workers.dev";
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  await setPersistence(auth, browserLocalPersistence);
+
+  const gate = document.getElementById('mdmAuthGate');
+  const form = document.getElementById('mdmLoginForm');
+  const emailEl = document.getElementById('mdmLoginEmail');
+  const passEl = document.getElementById('mdmLoginPassword');
+  const btn = document.getElementById('mdmLoginButton');
+  const err = document.getElementById('mdmAuthError');
+  const status = document.getElementById('mdmAuthStatus');
+  const badge = document.getElementById('mdmUserBadge');
+  const badgeEmail = document.getElementById('mdmUserEmail');
+  const logoutBtn = document.getElementById('mdmLogoutButton');
+
+  function humanAuthError(code){
+    const map = {
+      'auth/invalid-credential':'Email o password non corretti.',
+      'auth/invalid-email':'Email non valida.',
+      'auth/user-disabled':'Questo utente è disabilitato.',
+      'auth/too-many-requests':'Troppi tentativi. Riprova più tardi.',
+      'auth/network-request-failed':'Problema di connessione. Controlla Internet.',
+      'auth/unauthorized-domain':'Questo indirizzo web non è ancora autorizzato in Firebase.'
+    };
+    return map[code] || 'Accesso non riuscito. Controlla email e password.';
+  }
+
+  async function workerHealth(user){
+    const token = await user.getIdToken();
+    const r = await fetch(WORKER_BASE + '/health', { headers:{ Authorization:'Bearer ' + token } });
+    if(!r.ok) throw new Error('Worker ' + r.status);
+    return r.json();
+  }
+
+  form.addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    err.textContent=''; status.textContent=''; btn.disabled=true; btn.textContent='Accesso…';
+    try{
+      const cred = await signInWithEmailAndPassword(auth, emailEl.value.trim(), passEl.value);
+      status.textContent='Accesso riuscito.';
+      try { await workerHealth(cred.user); } catch(e) { console.warn('Worker check:', e); }
+    }catch(e){ err.textContent = humanAuthError(e.code); }
+    finally{ btn.disabled=false; btn.textContent='Accedi'; }
+  });
+
+  logoutBtn.addEventListener('click', ()=>signOut(auth));
+
+  onAuthStateChanged(auth, async (user)=>{
+    if(user){
+      gate.hidden=true;
+      badge.style.display='flex';
+      badgeEmail.textContent=user.email || 'Utente';
+      try{
+        await workerHealth(user);
+        badge.title='Login Firebase e archivio allegati collegati';
+      }catch(e){
+        badge.title='Login attivo; collegamento archivio da verificare';
+        console.warn(e);
+      }
+    }else{
+      gate.hidden=false;
+      badge.style.display='none';
+      passEl.value='';
+    }
+  });
+
+  window.mdmAuth = auth;
+  window.mdmWorkerBase = WORKER_BASE;
+  window.mdmGetFirebaseToken = async ()=> {
+    const user = auth.currentUser;
+    if(!user) throw new Error('Utente non autenticato');
+    return user.getIdToken();
+  };
+  window.mdmSecureFetch = async (path, options={}) => {
+    const token = await window.mdmGetFirebaseToken();
+    const headers = new Headers(options.headers || {});
+    headers.set('Authorization','Bearer ' + token);
+    return fetch(WORKER_BASE + path, {...options, headers});
+  };
+</script>
+
+
+</body></html>
